@@ -4,9 +4,25 @@ import io from "socket.io-client";
 const socket = io(process.env.REACT_APP_SERVER_URL || "http://localhost:5000");
 
 const ICE_SERVERS = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "5f9d492dab2e65115d8e809c",
+      credential: "tOll6qUbz+8sl04R",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "5f9d492dab2e65115d8e809c",
+      credential: "tOll6qUbz+8sl04R",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "5f9d492dab2e65115d8e809c",
+      credential: "tOll6qUbz+8sl04R",
+    },
+  ],
 };
-
 function Video({ roomId, name, micOn, videoOn, setParticipants }) {
   const localVideoRef = useRef();
   const streamRef = useRef();
