@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import io from "socket.io-client";
-
-const socket = io(process.env.REACT_APP_SERVER_URL || "http://localhost:5000");
+import socket from "./socket";
 
 const ICE_SERVERS = {
   iceServers: [
@@ -23,16 +21,14 @@ const ICE_SERVERS = {
     },
   ],
 };
+
 function Video({ roomId, name, micOn, videoOn, setParticipants }) {
   const localVideoRef = useRef();
   const streamRef = useRef();
   const peersRef = useRef({});
 
-  // remoteStreams: [{ id, stream, name, videoOn }]
   const [remoteStreams, setRemoteStreams] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  // ── Helpers ────────────────────────────────────────────────
 
   function addRemoteStream(peerId, stream, peerName, peerVideoOn) {
     setRemoteStreams((prev) => {
@@ -46,7 +42,7 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
     setParticipants((prev) => prev.filter((p) => p.id !== peerId));
   }
 
-  function updatePeerVideoState(peerId, state) {
+  function updatePeerVideo(peerId, state) {
     setRemoteStreams((prev) =>
       prev.map((s) => (s.id === peerId ? { ...s, videoOn: state } : s))
     );
@@ -74,8 +70,6 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
     return peer;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Main Effect ────────────────────────────────────────────
-
   useEffect(() => {
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
@@ -87,7 +81,6 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
       })
       .catch(() => setLoading(false));
 
-    // Existing users — we send offers to each
     socket.on("existing-users", async (users) => {
       setParticipants(users);
       for (const user of users) {
@@ -99,15 +92,16 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
       }
     });
 
-    // New user joined — add to participants list
     socket.on("user-joined", (user) => {
-      setParticipants((prev) => [...prev, user]);
+      setParticipants((prev) => {
+        if (prev.find(p => p.id === user.id)) return prev;
+        return [...prev, user];
+      });
     });
 
-    // We receive an offer from a new user
     socket.on("offer", async ({ from, offer }) => {
-      // Get their name from participants or fallback
-      const peer = createPeer(from, streamRef.current, "Participant", true);
+      const peerName = "Participant";
+      const peer = createPeer(from, streamRef.current, peerName, true);
       peersRef.current[from] = peer;
       await peer.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await peer.createAnswer();
@@ -128,9 +122,8 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
       }
     });
 
-    // Peer toggled their camera — update their tile overlay
     socket.on("peer-video-state", ({ id, videoOn: state }) => {
-      updatePeerVideoState(id, state);
+      updatePeerVideo(id, state);
     });
 
     socket.on("user-disconnected", (peerId) => {
@@ -156,13 +149,10 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
       socket.off("peer-video-state");
       socket.off("user-disconnected");
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, name, createPeer, setParticipants]);
 
-  // ── React to videoOn prop ──────────────────────────────────
   useEffect(() => {
     if (!streamRef.current) return;
-
     if (!videoOn) {
       streamRef.current.getVideoTracks().forEach((track) => {
         track.stop();
@@ -180,19 +170,15 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
         localVideoRef.current.srcObject = streamRef.current;
       });
     }
-    // Tell everyone your video state changed
     socket.emit("video-state", { roomId, videoOn });
   }, [videoOn, roomId]);
 
-  // ── React to micOn prop ────────────────────────────────────
   useEffect(() => {
     if (!streamRef.current) return;
     const audioTrack = streamRef.current.getAudioTracks()[0];
     if (!audioTrack) return;
     audioTrack.enabled = micOn;
   }, [micOn]);
-
-  // ── Render ─────────────────────────────────────────────────
 
   const total = 1 + remoteStreams.length;
   const gridCols = total === 1 ? "1fr" : total <= 4 ? "1fr 1fr" : "repeat(3, 1fr)";
@@ -201,71 +187,43 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&display=swap');
-        .video-wrapper { display: flex; flex-direction: column; align-items: center; gap: 20px; width: 100%; padding: 0 24px; }
-        .video-grid { display: grid; width: 100%; max-width: 1100px; gap: 12px; grid-template-columns: ${gridCols}; }
-        .video-tile {
-          position: relative; border-radius: 16px; overflow: hidden;
-          background: #0d1628; aspect-ratio: 16/9;
-          box-shadow: 0 0 0 1px rgba(255,255,255,0.07), 0 20px 50px rgba(0,0,0,0.5);
-          display: flex; align-items: center; justify-content: center;
-        }
-        .video-tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .local-video { transform: scaleX(-1); }
-        .tile-label {
-          position: absolute; bottom: 10px; left: 12px;
-          background: rgba(0,0,0,0.55); backdrop-filter: blur(6px);
-          border: 1px solid rgba(255,255,255,0.08); border-radius: 6px;
-          padding: 3px 9px; font-family: 'DM Sans', sans-serif; font-size: 12px;
-          color: rgba(255,255,255,0.75); display: flex; align-items: center; gap: 6px;
-        }
-        .live-dot {
-          width: 6px; height: 6px; border-radius: 50%; background: #22c55e;
-          animation: pulse-dot 1.5s ease infinite;
-        }
+        .video-wrapper { display:flex;flex-direction:column;align-items:center;gap:20px;width:100%;padding:0 24px; }
+        .video-grid { display:grid;width:100%;max-width:1100px;gap:12px;grid-template-columns:${gridCols}; }
+        .video-tile { position:relative;border-radius:16px;overflow:hidden;background:#0d1628;aspect-ratio:16/9;box-shadow:0 0 0 1px rgba(255,255,255,0.07),0 20px 50px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center; }
+        .video-tile video { width:100%;height:100%;object-fit:cover;display:block; }
+        .local-video { transform:scaleX(-1); }
+        .tile-label { position:absolute;bottom:10px;left:12px;background:rgba(0,0,0,0.55);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:3px 9px;font-family:'DM Sans',sans-serif;font-size:12px;color:rgba(255,255,255,0.75);display:flex;align-items:center;gap:6px; }
+        .live-dot { width:6px;height:6px;border-radius:50%;background:#22c55e;animation:pulse-dot 1.5s ease infinite; }
         @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.35} }
-        .muted-indicator {
-          position: absolute; top: 10px; right: 12px;
-          background: rgba(255,60,60,0.18); border: 1px solid rgba(255,60,60,0.3);
-          border-radius: 6px; padding: 3px 9px; font-size: 11px; color: #ff8a8a;
-        }
-        .video-off-overlay {
-          position: absolute; inset: 0; display: flex; flex-direction: column;
-          align-items: center; justify-content: center; background: #0d1628; gap: 10px;
-        }
-        .video-off-avatar {
-          width: 60px; height: 60px; border-radius: 50%;
-          background: rgba(26,111,255,0.1); border: 2px solid rgba(26,111,255,0.25);
-          display: flex; align-items: center; justify-content: center;
-          font-size: 22px; font-weight: 600; color: #6ca0ff; text-transform: uppercase;
-        }
-        .video-off-label { font-family: 'DM Sans', sans-serif; font-size: 12px; color: rgba(255,255,255,0.28); }
-        .spinner-wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: #0d1628; }
-        .spinner { width: 32px; height: 32px; border: 2px solid rgba(255,255,255,0.07); border-top-color: #1a6fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
+        .muted-ind { position:absolute;top:10px;right:12px;background:rgba(255,60,60,0.18);border:1px solid rgba(255,60,60,0.3);border-radius:6px;padding:3px 9px;font-size:11px;color:#ff8a8a; }
+        .vid-off { position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0d1628;gap:10px; }
+        .vid-off-av { width:60px;height:60px;border-radius:50%;background:rgba(26,111,255,0.1);border:2px solid rgba(26,111,255,0.25);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:600;color:#6ca0ff;text-transform:uppercase; }
+        .vid-off-lbl { font-family:'DM Sans',sans-serif;font-size:12px;color:rgba(255,255,255,0.28); }
+        .spinner-wrap { position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#0d1628; }
+        .spinner { width:32px;height:32px;border:2px solid rgba(255,255,255,0.07);border-top-color:#1a6fff;border-radius:50%;animation:spin 0.8s linear infinite; }
+        @keyframes spin { to{transform:rotate(360deg)} }
       `}</style>
 
       <div className="video-wrapper">
         <div className="video-grid">
-
-          {/* LOCAL TILE */}
+          {/* LOCAL */}
           <div className="video-tile">
-            {loading && <div className="spinner-wrap"><div className="spinner" /></div>}
-            <video ref={localVideoRef} autoPlay playsInline muted className="local-video" />
+            {loading && <div className="spinner-wrap"><div className="spinner"/></div>}
+            <video ref={localVideoRef} autoPlay playsInline muted className="local-video"/>
             {!videoOn && (
-              <div className="video-off-overlay">
-                <div className="video-off-avatar">{name.charAt(0)}</div>
-                <span className="video-off-label">Camera is off</span>
+              <div className="vid-off">
+                <div className="vid-off-av">{name.charAt(0)}</div>
+                <span className="vid-off-lbl">Camera is off</span>
               </div>
             )}
-            <div className="tile-label"><div className="live-dot" /> {name} (You)</div>
-            {!micOn && <div className="muted-indicator">🔇 Muted</div>}
+            <div className="tile-label"><div className="live-dot"/> {name} (You)</div>
+            {!micOn && <div className="muted-ind">🔇 Muted</div>}
           </div>
 
-          {/* REMOTE TILES */}
+          {/* REMOTE */}
           {remoteStreams.map(({ id, stream, name: peerName, videoOn: peerVideoOn }) => (
-            <RemoteTile key={id} stream={stream} name={peerName} videoOn={peerVideoOn} />
+            <RemoteTile key={id} stream={stream} name={peerName} videoOn={peerVideoOn}/>
           ))}
-
         </div>
       </div>
     </>
@@ -280,14 +238,14 @@ function RemoteTile({ stream, name, videoOn }) {
 
   return (
     <div className="video-tile">
-      <video ref={ref} autoPlay playsInline />
+      <video ref={ref} autoPlay playsInline/>
       {!videoOn && (
-        <div className="video-off-overlay">
-          <div className="video-off-avatar">{name?.charAt(0) || "?"}</div>
-          <span className="video-off-label">Camera is off</span>
+        <div className="vid-off">
+          <div className="vid-off-av">{name?.charAt(0) || "?"}</div>
+          <span className="vid-off-lbl">Camera is off</span>
         </div>
       )}
-      <div className="tile-label"><div className="live-dot" /> {name || "Participant"}</div>
+      <div className="tile-label"><div className="live-dot"/> {name || "Participant"}</div>
     </div>
   );
 }
