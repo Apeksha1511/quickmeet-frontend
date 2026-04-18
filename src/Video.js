@@ -71,19 +71,12 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    navigator.mediaDevices
-      .getUserMedia({ video: true, audio: true })
-      .then(async (stream) => {
-        streamRef.current = stream;
-        localVideoRef.current.srcObject = stream;
-        setLoading(false);
-        socket.emit("join-room", { roomId, name });
-      })
-      .catch(() => setLoading(false));
-
+    // Step 1 — set up ALL listeners FIRST before anything else
     socket.on("existing-users", async (users) => {
+      console.log("📋 Existing users:", users);
       setParticipants(users);
       for (const user of users) {
+        if (!streamRef.current) continue;
         const peer = createPeer(user.id, streamRef.current, user.name, user.videoOn);
         peersRef.current[user.id] = peer;
         const offer = await peer.createOffer();
@@ -93,6 +86,7 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
     });
 
     socket.on("user-joined", (user) => {
+      console.log("👤 User joined:", user.name);
       setParticipants((prev) => {
         if (prev.find(p => p.id === user.id)) return prev;
         return [...prev, user];
@@ -100,8 +94,8 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
     });
 
     socket.on("offer", async ({ from, offer }) => {
-      const peerName = "Participant";
-      const peer = createPeer(from, streamRef.current, peerName, true);
+      console.log("📞 Got offer from:", from);
+      const peer = createPeer(from, streamRef.current, "Participant", true);
       peersRef.current[from] = peer;
       await peer.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await peer.createAnswer();
@@ -133,6 +127,24 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
       }
       removeRemoteStream(peerId);
     });
+
+    // Step 2 — get camera AFTER listeners are ready, THEN join room
+    navigator.mediaDevices
+      .getUserMedia({ video: true, audio: true })
+      .then((stream) => {
+        streamRef.current = stream;
+        localVideoRef.current.srcObject = stream;
+        setLoading(false);
+        // Step 3 — only NOW tell server we joined
+        console.log("🚪 Joining room:", roomId, "as", name);
+        socket.emit("join-room", { roomId, name });
+      })
+      .catch((err) => {
+        console.error("Camera error:", err);
+        setLoading(false);
+        // Still join even if camera fails
+        socket.emit("join-room", { roomId, name });
+      });
 
     return () => {
       if (streamRef.current) {
