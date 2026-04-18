@@ -149,6 +149,7 @@ function Video({ roomId, name, micOn, videoOn, setParticipants }) {
       socket.off("peer-video-state");
       socket.off("user-disconnected");
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, name, createPeer, setParticipants]);
 
   useEffect(() => {
